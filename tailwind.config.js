@@ -4,7 +4,7 @@ export default {
   // 請根據您的專案結構調整路徑！如果您的代碼放在 'src' 資料夾內，請保留這個設定。
   content: [
     // 掃描專案根目錄下的主要 HTML 檔案
-    "./index.html", 
+    "index.html", 
     
     // 掃描 'src' 資料夾下所有 .js, .ts, .jsx, 和 .tsx 檔案（涵蓋 React/Vue/Svelte 元件）
     "./src/**/*.{js,ts,jsx,tsx}",
@@ -20,3 +20,4 @@ export default {
     // 您可以在此處添加 Tailwind 官方或其他第三方插件
   ],
 }
+
