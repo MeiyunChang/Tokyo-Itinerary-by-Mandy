@@ -38,24 +38,32 @@ import {
   doc, 
   query, 
   orderBy,
-  serverTimestamp
+  serverTimestamp,
+  setLogLevel // 引入設定日誌等級的函數
 } from 'firebase/firestore';
 
-// --- Firebase Configuration & Initialization ---
-// 🚨🚨 已替換為您提供的 Firebase 專案金鑰 🚨🚨
-const firebaseConfig = {
-  apiKey: "AIzaSyDH4YXCzNUroQWJaaGkfqm5dUYxVCaS8Lc",
-  authDomain: "tokyo-itinerary-by-mandy.firebaseapp.com",
-  projectId: "tokyo-itinerary-by-mandy",
-  storageBucket: "tokyo-itinerary-by-mandy.firebasestorage.app",
-  messagingSenderId: "103151521708",
-  appId: "1:103151521708:web:d35b70b59c0f4d21c9f409",
-  measurementId: "G-FT4CY9VZFV"
-};
+// --- Global Variables (Canvas Environment) ---
+// 確保使用 Canvas 環境提供的全域變數
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'tokyo-trip-2024';
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : { 
+      // 替換為用戶提供的金鑰，作為非 Canvas 環境下的備用配置
+      apiKey: "AIzaSyDH4YXCzNUroQWJaaGkfqm5dUYxVCaS8Lc",
+      authDomain: "tokyo-itinerary-by-mandy.firebaseapp.com",
+      projectId: "tokyo-itinerary-by-mandy",
+      storageBucket: "tokyo-itinerary-by-mandy.firebasestorage.app",
+      messagingSenderId: "103151521708",
+      appId: "1:103151521708:web:d35b70b59c0f4d21c9f409",
+      measurementId: "G-FT4CY9VZFV"
+    };
+
+// 初始化 Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'tokyo-trip-2024';
+// 設定日誌等級，以利偵錯
+setLogLevel('debug'); 
 
 // --- Data: Parsed & Enriched Itinerary ---
 // Based on the user's Excel file, enriched with "Tour Guide" tips.
@@ -483,7 +491,7 @@ const ToolsView = () => {
   );
 };
 
-const BudgetView = ({ user }) => {
+const BudgetView = ({ user, isAuthReady }) => {
   const [expenses, setExpenses] = useState([]);
   const [newItem, setNewItem] = useState('');
   const [newCost, setNewCost] = useState('');
@@ -491,15 +499,24 @@ const BudgetView = ({ user }) => {
 
   // Use a user-specific collection path
   const collectionPath = useMemo(() => {
+    // 確保 user 存在才構建路徑，這樣可以避免在登入前嘗試建立錯誤的路徑
     return user ? `artifacts/${appId}/users/${user.uid}/expenses` : null;
   }, [user]);
 
   useEffect(() => {
-    if (!user || !collectionPath) return;
+    // 只有在認證準備好且用戶 ID 存在時才執行 Firestore 查詢
+    if (!isAuthReady || !user || !collectionPath) {
+      if (isAuthReady) setLoading(false);
+      return;
+    }
 
+    setLoading(true);
     const q = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      // 在內存中進行排序，避免 Firestore 索引錯誤
+      const fetchedExpenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      fetchedExpenses.sort((a, b) => b.timestamp?.seconds - a.timestamp?.seconds); // 倒序排序
+      setExpenses(fetchedExpenses);
       setLoading(false);
     }, (error) => {
        console.error("Budget fetch error:", error);
@@ -507,17 +524,18 @@ const BudgetView = ({ user }) => {
     });
 
     return () => unsubscribe();
-  }, [user, collectionPath]);
+  }, [user, isAuthReady, collectionPath]);
 
   const handleAdd = async (e) => {
     e.preventDefault();
-    if (!newItem || !newCost || !collectionPath) return;
+    if (!newItem || !newCost || !collectionPath || !user) return;
 
     try {
       await addDoc(collection(db, collectionPath), {
         item: newItem,
         cost: Number(newCost),
-        timestamp: serverTimestamp()
+        timestamp: serverTimestamp(),
+        userId: user.uid // 記錄是哪個用戶創建的
       });
       setNewItem('');
       setNewCost('');
@@ -528,12 +546,16 @@ const BudgetView = ({ user }) => {
 
   const handleDelete = async (id) => {
      if (!collectionPath) return;
-     await deleteDoc(doc(db, collectionPath, id));
+     try {
+       await deleteDoc(doc(db, collectionPath, id));
+     } catch (err) {
+       console.error("Error deleting expense:", err);
+     }
   };
 
   const total = expenses.reduce((acc, curr) => acc + (curr.cost || 0), 0);
 
-  if (!user) return <div className="p-8 text-center text-slate-400">登入中...</div>;
+  if (!isAuthReady) return <div className="p-8 text-center text-slate-400">登入與配置中...</div>;
 
   return (
     <div className="pb-24 pt-4">
@@ -543,6 +565,9 @@ const BudgetView = ({ user }) => {
       <div className="bg-slate-800 text-white p-6 rounded-2xl shadow-lg mb-6">
         <div className="text-slate-400 text-sm mb-1">總支出 (JPY/TWD)</div>
         <div className="text-4xl font-bold font-mono">¥{total.toLocaleString()}</div>
+        <div className="text-xs mt-2 text-slate-500">
+            用戶 ID: <span className="font-mono text-xs">{user?.uid || '匿名用戶'}</span>
+        </div>
       </div>
 
       {/* Add Form */}
@@ -553,6 +578,7 @@ const BudgetView = ({ user }) => {
           className="flex-1 bg-slate-50 border-none rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sage-400 outline-none"
           value={newItem}
           onChange={(e) => setNewItem(e.target.value)}
+          required
         />
         <input 
           type="number" 
@@ -560,8 +586,10 @@ const BudgetView = ({ user }) => {
           className="w-24 bg-slate-50 border-none rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-sage-400 outline-none"
           value={newCost}
           onChange={(e) => setNewCost(e.target.value)}
+          required
+          min="1"
         />
-        <button type="submit" className="bg-sage-600 text-white p-2 rounded-lg">
+        <button type="submit" className="bg-sage-600 text-white p-2 rounded-lg hover:bg-sage-700 transition-colors">
           <Plus className="w-5 h-5" />
         </button>
       </form>
@@ -578,7 +606,7 @@ const BudgetView = ({ user }) => {
               <span className="text-slate-700 font-medium">{expense.item}</span>
               <div className="flex items-center gap-3">
                 <span className="text-slate-800 font-mono font-bold">¥{expense.cost}</span>
-                <button onClick={() => handleDelete(expense.id)} className="text-slate-300 hover:text-terracotta">
+                <button onClick={() => handleDelete(expense.id)} className="text-slate-300 hover:text-terracotta transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
@@ -596,20 +624,40 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('itinerary');
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [user, setUser] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false); // 新增狀態：認證是否完成
 
   // Auth Init
   useEffect(() => {
+    // 設定認證監聽器
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true); // 認證狀態改變後，標記為準備就緒
+      console.log("Firebase Auth State Changed. User ID:", currentUser?.uid);
+    }, (error) => {
+        console.error("Auth State Error:", error);
+        setIsAuthReady(true); // 即使出錯也標記為準備就緒，避免無限載入
+    });
+
+    // 執行登入邏輯
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
+      try {
+        const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        if (token) {
+          await signInWithCustomToken(auth, token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Initial Auth Error (Expected during sign-in):", e);
+        // 如果 custom token 失敗，onAuthStateChanged 最終會處理匿名登入或未登入狀態
       }
     };
+    
+    // 確保在設定完監聽器後才開始登入流程
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
+    
+    return () => unsubscribe(); // 清理監聽器
+  }, []); // 僅在元件掛載時運行一次
 
   return (
     <div className="min-h-screen bg-[#F5F5F0] font-sans text-slate-800">
@@ -648,7 +696,7 @@ export default function App() {
             <DayView dayData={ITINERARY_DATA[selectedDayIndex]} />
           )}
           {activeTab === 'tools' && <ToolsView />}
-          {activeTab === 'budget' && <BudgetView user={user} />}
+          {activeTab === 'budget' && <BudgetView user={user} isAuthReady={isAuthReady} />}
         </main>
 
         {/* Bottom Navigation */}
