@@ -511,11 +511,13 @@ const BudgetView = ({ user, isAuthReady }) => {
     }
 
     setLoading(true);
-    const q = query(collection(db, collectionPath), orderBy('timestamp', 'desc'));
+    // 為了避免 Firestore 索引配置問題，我們移除了 orderBy，完全依賴客戶端內存排序。
+    const q = query(collection(db, collectionPath));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      // 在內存中進行排序，避免 Firestore 索引錯誤
+      // 在內存中進行排序，確保順序正確
       const fetchedExpenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      fetchedExpenses.sort((a, b) => b.timestamp?.seconds - a.timestamp?.seconds); // 倒序排序
+      // 倒序排序，確保最新的項目在最上方
+      fetchedExpenses.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)); 
       setExpenses(fetchedExpenses);
       setLoading(false);
     }, (error) => {
